@@ -1177,13 +1177,20 @@ class BIMApp {
                     const rel = await manager.getItemProperties(modelID, relID);
                     if (!rel || !rel.RelatingGroup || !rel.RelatedObjects) continue;
 
+                    // === ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ ОТЛАДКИ ===
+                    const groupValue = rel.RelatingGroup.value;
+                    const groupType = rel.RelatingGroup.type;
+                    
+                    // Получаем свойства группы
+                    const groupProps = await manager.getItemProperties(modelID, groupValue);
+                    const groupName = groupProps.Name?.value || '';
+                    const groupObjectType = groupProps.ObjectType?.value || '';
+                    const groupTag = groupProps.Tag?.value || '';
+                    
+                    this.log(`🔍 Связь #${relID}: Группа #${groupValue}, Тип: ${groupType}, Имя: "${groupName}"`);
+                    
                     // Проверяем, является ли группа системой (IfcSystem)
                     // Варианты проверки: по строковому типу, по числовому ID, по наличию свойства Name
-                    const groupType = rel.RelatingGroup.type;
-                    const groupValue = rel.RelatingGroup.value;
-                    
-                    // Получаем свойства группы для дополнительной проверки
-                    const groupProps = await manager.getItemProperties(modelID, groupValue);
                     const isSystemByType = groupType && (
                         String(groupType).toUpperCase().includes('SYSTEM') || 
                         groupType === 'IFCSYSTEM' || 
@@ -1191,21 +1198,33 @@ class BIMApp {
                     );
                     
                     // Доп. проверка: если у группы есть Name и он похож на имя системы
-                    const groupName = groupProps.Name?.value || '';
                     const isSystemByName = groupName && (
                         groupName.toLowerCase().includes('system') ||
                         groupName.toLowerCase().includes('система') ||
-                        /^[A-Z0-9\-_]+$/.test(groupName) // Короткие коды типа "T1", "K1-2"
+                        /^[A-Z0-9\-_\+\s]+$/.test(groupName) // Короткие коды типа "T1", "K1-2", "00-02-ОВ"
                     );
 
-                    if (!isSystemByType && !isSystemByName) continue;
+                    this.log(`   🏷️ Проверка: Type=${isSystemByType ? '✅' : '❌'}, Name=${isSystemByName ? '✅' : '❌'}`);
+                    
+                    if (!isSystemByType && !isSystemByName) {
+                        this.log(`   ⏭️ Пропускаем группу (не система)`);
+                        continue;
+                    }
 
-                    const sysName = groupName || groupProps.ObjectType?.value || groupProps.Tag?.value;
-                    if (!sysName) continue;
+                    const sysName = groupName || groupObjectType || groupTag;
+                    if (!sysName) {
+                        this.log(`   ⚠️ Нет имени у системы, пропускаем`);
+                        continue;
+                    }
 
                     const cleanedSysName = this.cleanSystemName(sysName);
-                    if (!cleanedSysName) continue;
+                    if (!cleanedSysName) {
+                        this.log(`   ⚠️ Очищенное имя пусто, пропускаем`);
+                        continue;
+                    }
 
+                    this.log(`   ✅ Назначаем систему "${cleanedSysName}" ${rel.RelatedObjects.length} элементам`);
+                    
                     // Назначаем всем связанным объектам эту систему
                     for (const objRef of rel.RelatedObjects) {
                         const elemID = objRef.value;
