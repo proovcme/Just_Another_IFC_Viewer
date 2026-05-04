@@ -1121,79 +1121,87 @@ class BIMApp {
     }
 
  async startIndexing() {
-        const modelID = this.currentModelID;
-        const btn = document.getElementById('btn-index-data');
-        const progressText = document.getElementById('index-progress');
-        const nodes = document.querySelectorAll('.tree-node');
-        const manager = this.loader.ifcManager;
+    const btn = document.getElementById('btn-index-data');
+    const progressText = document.getElementById('index-progress');
+    const manager = this.loader.ifcManager;
 
-        if (nodes.length === 0) {
-            alert("Дерево модели еще не построено.");
-            return;
-        }
+    if (this.loadedModels.length === 0) {
+        this.log('⚠️ Нет загруженных моделей для индексации');
+        return;
+    }
 
-        btn.disabled = true;
-        btn.textContent = '🚀 Qwen-индексация...';
-        progressText.style.display = 'block';
-        progressText.textContent = 'Выгрузка графа свойств из WASM...';
-        await new Promise(r => setTimeout(r, 50)); // Даем UI отрисовать статус
+    btn.disabled = true;
+    btn.textContent = '🚀 Qwen-индексация...';
+    progressText.style.display = 'block';
+    progressText.textContent = 'Сканирование всех моделей...';
+    await new Promise(r => setTimeout(r, 50));
 
-        const cacheKey = 'bim_index_' + (this.currentModelName || 'default_model');
-        localStorage.removeItem(cacheKey);
+    let totalSystemsFound = 0;
+    const indexDataGlobal = {}; // Хранилище для всех моделей
 
-        const indexData = {};
-
-        try {
-            let allProps;
+    try {
+        // Проходим по каждой загруженной модели
+        for (const loadedModel of this.loadedModels) {
+            const modelID = loadedModel.modelID;
+            const modelName = loadedModel.name || `Model_${modelID}`;
             
-            // 1. Пытаемся использовать метод Квена напрямую
+            this.log(`🔍 Обработка модели: ${modelName} (ID: ${modelID})`);
+            progressText.textContent = `Модель: ${modelName.substring(0, 20)}...`;
+
+            const cacheKey = 'bim_index_' + modelID;
+            localStorage.removeItem(cacheKey);
+            const indexData = {};
+
+            // ШАГ 1: Пытаемся получить граф свойств через IFCRELDEFINESBYPROPERTIES
+            let allProps = null;
+            
             if (typeof manager.getAllProperties === 'function') {
-                this.log('📡 Используем getAllProperties для быстрой выгрузки...');
-                allProps = await manager.getAllProperties(modelID);
-                // Проверяем, что получили данные
-                if (!allProps || (allProps instanceof Map && allProps.size === 0) || (typeof allProps === 'object' && Object.keys(allProps).length === 0)) {
-                    this.log('⚠️ getAllProperties вернул пустой результат, пробуем ручной сбор...');
+                try {
+                    allProps = await manager.getAllProperties(modelID);
+                    if (!allProps || (allProps instanceof Map && allProps.size === 0)) {
+                        allProps = null;
+                    }
+                } catch (e) {
+                    this.log(`⚠️ getAllProperties ошибся: ${e.message}`);
                     allProps = null;
                 }
-            } else {
-                this.log('⚠️ Метод getAllProperties не найден, используем ручной сбор...');
             }
             
             if (!allProps) {
-                // Если метода нет или он вернул пусто, собираем граф свойств в памяти за 1 секунду
+                // Ручной сбор связей
                 allProps = new Map();
-                const rels = await manager.getAllItemsOfType(modelID, 'IFCRELDEFINESBYPROPERTIES', false);
-                this.log(`📦 Найдено связей IFCRELDEFINESBYPROPERTIES: ${rels.length}`);
-                for (const relID of rels) {
-                    const rel = await manager.getItemProperties(modelID, relID);
-                    if (!rel || !rel.RelatingPropertyDefinition || !rel.RelatedObjects) continue;
-                    const pset = await manager.getItemProperties(modelID, rel.RelatingPropertyDefinition.value);
-                    if (!pset || !pset.HasProperties) continue;
+                try {
+                    const rels = await manager.getAllItemsOfType(modelID, 'IFCRELDEFINESBYPROPERTIES', false);
+                    this.log(`📦 Найдено связей IFCRELDEFINESBYPROPERTIES: ${rels.length}`);
                     
-                    // Разворачиваем свойства в JS-объект
-                    const fullPset = { ...pset, HasProperties: [] };
-                    for (const propRef of pset.HasProperties) {
-                        fullPset.HasProperties.push(await manager.getItemProperties(modelID, propRef.value));
+                    for (const relID of rels) {
+                        const rel = await manager.getItemProperties(modelID, relID);
+                        if (!rel || !rel.RelatingPropertyDefinition || !rel.RelatedObjects) continue;
+                        
+                        const pset = await manager.getItemProperties(modelID, rel.RelatingPropertyDefinition.value);
+                        if (!pset || !pset.HasProperties) continue;
+                        
+                        const fullPset = { ...pset, HasProperties: [] };
+                        for (const propRef of pset.HasProperties) {
+                            fullPset.HasProperties.push(await manager.getItemProperties(modelID, propRef.value));
+                        }
+                        
+                        for (const objRef of rel.RelatedObjects) {
+                            const elemID = objRef.value;
+                            if (!allProps.has(elemID)) allProps.set(elemID, []);
+                            allProps.get(elemID).push(fullPset);
+                        }
                     }
-                    
-                    for (const objRef of rel.RelatedObjects) {
-                        const elemID = objRef.value;
-                        if (!allProps.has(elemID)) allProps.set(elemID, []);
-                        allProps.get(elemID).push(fullPset);
-                    }
+                } catch (e) {
+                    this.log(`⚠️ Ошибка ручного сбора: ${e.message}`);
                 }
             }
 
-            progressText.textContent = 'Парсинг свойств чистым JS...';
-            await new Promise(r => setTimeout(r, 10));
-
-            // 2. Алгоритм Квена: Проход по JS-массиву
+            // ШАГ 2: Парсинг Psets для поиска System Name
             for (const [expressID, pSets] of allProps.entries()) {
                 if (!pSets || !Array.isArray(pSets)) continue;
 
                 let sysName = null;
-                let famType = null;
-
                 for (const pSet of pSets) {
                     const props = pSet.HasProperties || [];
                     for (const p of props) {
@@ -1202,80 +1210,99 @@ class BIMApp {
                         if (!rawName || val === null) continue;
 
                         const name = rawName.toLowerCase();
-
-                        // Поиск имени системы
-                        if (!sysName && (name.includes('system') || name.includes('система') || name.includes('pset_system'))) {
+                        if (name.includes('system') || name.includes('система') || name.includes('pset_system')) {
                             sysName = String(val);
+                            break;
                         }
-                        // Поиск семейства и типа
-                        if (!famType && (name.includes('family') || name.includes('тип') || name.includes('типоразмер') || name === 'objecttype')) {
-                            famType = String(val);
-                        }
-                        if (sysName && famType) break;
                     }
-                    if (sysName && famType) break;
+                    if (sysName) break;
                 }
 
-                if (sysName || famType) {
-                    indexData[expressID] = {};
-                    if (sysName) indexData[expressID].s = sysName;
-                    if (famType) indexData[expressID].f = famType;
+                if (sysName) {
+                    indexData[expressID] = { s: sysName };
                 }
             }
 
-            // 3. Фишка от Квена: сбор типов из IfcRelDefinesByType (специфика Revit)
-            progressText.textContent = 'Проверка семейств и типов...';
-            await new Promise(r => setTimeout(r, 10));
+            // ШАГ 3: Fallback - прямое чтение свойств Name/Tag/ObjectType у элементов без Psets
+            const indexedIds = new Set(Object.keys(indexData).map(Number));
+            const allLines = await manager.getAllLines(modelID);
+            let directReadCount = 0;
             
-            try {
-                const typeRels = await manager.getAllItemsOfType(modelID, 'IFCRELDEFINESBYTYPE', false);
-                for (const relID of typeRels) {
-                    const rel = await manager.getItemProperties(modelID, relID);
-                    if (!rel || !rel.RelatingType || !rel.RelatedObjects) continue;
-                    
-                    const typeObj = await manager.getItemProperties(modelID, rel.RelatingType.value);
-                    if (typeObj && typeObj.Name) {
-                        const famName = String(typeObj.Name.value);
-                        for (const objRef of rel.RelatedObjects) {
-                            const elemID = objRef.value;
-                            if (!indexData[elemID]) indexData[elemID] = {};
-                            if (!indexData[elemID].f) indexData[elemID].f = famName;
+            for (const expressID of allLines) {
+                if (indexedIds.has(expressID)) continue; // Уже есть из Psets
+                
+                try {
+                    // Пробуем прочитать Name напрямую
+                    const elemProps = await manager.getItemProperties(modelID, expressID, false);
+                    if (elemProps && elemProps.Name) {
+                        const nameVal = elemProps.Name.value || elemProps.Name;
+                        if (nameVal && typeof nameVal === 'string' && nameVal.trim().length > 2 && !nameVal.startsWith('Ifc')) {
+                            indexData[expressID] = { s: nameVal.trim() };
+                            directReadCount++;
                         }
                     }
+                    
+                    // Если Name не подошел, пробуем Tag
+                    if (!indexData[expressID] && elemProps && elemProps.Tag) {
+                        const tagVal = elemProps.Tag.value || elemProps.Tag;
+                        if (tagVal && typeof tagVal === 'string' && tagVal.trim().length > 2) {
+                            indexData[expressID] = { s: tagVal.trim() };
+                            directReadCount++;
+                        }
+                    }
+                    
+                    // Пробуем ObjectType
+                    if (!indexData[expressID] && elemProps && elemProps.ObjectType) {
+                        const typeVal = elemProps.ObjectType.value || elemProps.ObjectType;
+                        if (typeVal && typeof typeVal === 'string' && typeVal.trim().length > 2) {
+                            indexData[expressID] = { s: typeVal.trim() };
+                            directReadCount++;
+                        }
+                    }
+                } catch (e) {
+                    // Игнорируем ошибки чтения отдельных элементов
                 }
-            } catch(e) {
-                // Игнорируем, если связей нет
+                
+                // Yield каждые 1000 элементов
+                if (directReadCount % 1000 === 0) {
+                    await new Promise(r => setTimeout(r, 0));
+                }
             }
+            
+            this.log(`✅ Модель ${modelID}: найдено систем ${Object.keys(indexData).length} (из Psets + ${directReadCount} прямых)`);
+            totalSystemsFound += Object.keys(indexData).length;
 
-            progressText.textContent = 'Применение к дереву...';
-            await new Promise(r => setTimeout(r, 10));
-
-            // 4. Раскидываем результат по DOM-узлам
+            // ШАГ 4: Применяем к узлам дерева ЭТОЙ модели
             let appliedCount = 0;
+            const nodes = document.querySelectorAll(`.tree-node[data-model-id="${modelID}"]`);
             nodes.forEach(node => {
                 const id = parseInt(node.getAttribute('data-id'));
-                if (indexData[id]) {
-                    if (indexData[id].s) {
-                        node.setAttribute('data-system', indexData[id].s);
-                        appliedCount++;
-                    }
-                    if (indexData[id].f) node.setAttribute('data-family', indexData[id].f);
+                if (indexData[id] && indexData[id].s) {
+                    node.setAttribute('data-system', indexData[id].s);
+                    appliedCount++;
                 }
             });
-
-            this.log(`📊 Найдено систем: ${Object.keys(indexData).filter(k => indexData[k].s).length}, применено к узлам: ${appliedCount}`);
-
-            // Кэшируем для мгновенной загрузки в будущем
+            
+            this.log(`📊 Применено к узлам дерева: ${appliedCount}`);
+            
+            // Кэшируем
             try { localStorage.setItem(cacheKey, JSON.stringify(indexData)); } catch(e) {}
-
-        } catch (e) {
-            console.error("Ошибка индексации:", e);
-            if (typeof this.log === 'function') this.log("ОШИБКА ИНДЕКСАЦИИ: " + e.message);
+            
+            indexDataGlobal[modelID] = indexData;
         }
 
-        this.finishIndexingUI(btn, progressText, '✅ Индексация завершена');
-        this.renderSystemsList();
+        this.log(`🎉 ИНДЕКСАЦИЯ ЗАВЕРШЕНА. Всего систем: ${totalSystemsFound}`);
+        progressText.textContent = '✅ Готово';
+
+    } catch (e) {
+        console.error("Ошибка индексации:", e);
+        this.log("❌ ОШИБКА: " + e.message);
+        progressText.textContent = '❌ Ошибка';
     }
+
+    this.finishIndexingUI(btn, progressText, '✅ Индексация завершена');
+    this.renderSystemsList();
+}
 
     finishIndexingUI(btn, progressText, message) {
         btn.disabled = false;
