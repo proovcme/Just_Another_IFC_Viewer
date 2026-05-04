@@ -1,0 +1,205 @@
+:root { --bg: #f0ede6; --text: #1a1a1a; --border: #e3e0d8; --accent: #174ea6; --font-body: 'Golos Text', sans-serif; --font-mono: 'JetBrains Mono', monospace; }
+
+body { margin: 0; overflow: hidden; background: var(--bg); font-family: var(--font-body); color: var(--text); }
+#container { width: 100%; position: relative; overflow: hidden; }
+
+.toolbar { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 6px; display: flex; gap: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.12); z-index: 10; }
+.btn { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 8px 14px; font-weight: 600; font-size: 11px; cursor: pointer; transition: 0.2s; white-space: nowrap; display: flex; align-items: center; justify-content: center; gap: 5px; }
+.btn:hover { border-color: var(--accent); color: var(--accent); background: #f8f7f3; }
+.btn-primary { background: var(--accent); color: #fff; border: none; }
+.btn-round { width: 44px; height: 44px; border-radius: 50%; padding: 0; justify-content: center; font-size: 20px; box-shadow: 0 4px 10px rgba(0,0,0,0.15); }
+.btn-active { background: #fbbc04 !important; color: #fff !important; border-color: #fbbc04 !important; }
+
+.btn-mode { font-weight: 800; color: #fff; border: none; width: 110px; }
+.mode-sport { background: #d93025; }
+.mode-balance { background: #174ea6; }
+.mode-beauty { background: #8e24aa; }
+
+.panel { position: absolute; background: rgba(255,255,255,0.95); border: 1px solid var(--border); border-radius: 10px; padding: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); z-index: 10; backdrop-filter: blur(8px); }
+.panel-header { font-weight: 800; font-size: 12px; color: var(--accent); margin-bottom: 12px; text-transform: uppercase; }
+
+#nav-panel { top: 90px; left: 20px; width: 300px; max-height: 70vh; overflow-y: auto; }
+#props-panel { top: 90px; right: 20px; width: 360px; max-height: 80vh; overflow-y: auto; }
+#section-panel { top: 70px; left: 50%; transform: translateX(-50%); width: 280px; }
+
+#hardhat-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 9000; background: radial-gradient(ellipse 120% 50% at 50% -20%, #fbbc04 30%, #e3a000 45%, transparent 50%); transition: opacity 0.4s ease-in-out; opacity: 0; display: none; }
+#hardhat-overlay.active { display: block; opacity: 1; }
+#hardhat-message { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; text-align: center; font-size: 28px; font-weight: 800; text-shadow: 0 2px 10px rgba(0,0,0,0.8); opacity: 0; transition: opacity 0.5s ease-in-out; }
+#hardhat-message.show { opacity: 1; }
+
+.hidden { display: none !important; }
+#status { position: absolute; bottom: 10px; right: 70px; font-size: 10px; font-family: var(--font-mono); background: rgba(255,255,255,0.8); padding: 2px 6px; border-radius: 4px; z-index: 100; }
+
+/* Task 8: App version */
+#app-version { position: absolute; bottom: 10px; left: 10px; font-size: 10px; opacity: 0.5; cursor: pointer; z-index: 100; color: var(--text); }
+
+/* Task 2: Debug log */
+#debug-log {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    background: rgba(0, 0, 0, 0.85);
+    color: #0f0;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 8px;
+    border-radius: 4px;
+    max-height: 200px;
+    overflow-y: auto;
+    pointer-events: none;
+    z-index: 9999;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+#debug-log:not(.hidden) { pointer-events: auto; }
+#nav-group { position: absolute; bottom: 30px; left: 20px; z-index: 20; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.close-btn { float: right; cursor: pointer; font-size: 20px; color: #ccc; }
+
+.measure-row { display: flex; justify-content: space-between; border-bottom: 1px dashed #eee; padding: 4px 0; }
+.axis-x { color: #d93025; font-weight: bold; }
+.axis-y { color: #1e8e3e; font-weight: bold; }
+.axis-z { color: #1a73e8; font-weight: bold; }
+.axis-total { color: #111; font-weight: 800; font-size: 14px; background: #f0f4f8; padding: 4px; border-radius: 4px; display: block; margin-top: 5px; text-align: center; }
+/* ==========================================================================
+   ОФОРМЛЕНИЕ ПАНЕЛИ СВОЙСТВ
+   ========================================================================== */
+
+.prop-group-title {
+    font-weight: 800;
+    color: var(--accent);
+    margin: 15px 0 5px 0;
+    font-size: 11px;
+    text-transform: uppercase;
+    border-bottom: 2px solid #f0f4f8;
+    padding-bottom: 4px;
+}
+
+.prop-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    border-bottom: 1px dashed #eee;
+    padding: 6px 0;
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+.prop-row:hover {
+    background: #f8f9fa;
+}
+
+.prop-name {
+    color: #666;
+    font-weight: 600;
+    width: 45%; /* Жестко фиксируем ширину колонки с названием */
+    flex-shrink: 0;
+    padding-right: 10px;
+    word-break: break-word;
+}
+
+.prop-val {
+    color: #111;
+    text-align: right;
+    word-break: break-word;
+    font-family: var(--font-mono);
+}
+
+/* Task: Index button cursor and hover */
+.tool-btn {
+    cursor: pointer;
+}
+.tool-btn:hover {
+    opacity: 0.8;
+}
+
+/* Task 7: Mobile UX optimization */
+@media (max-width: 768px) {
+    #props-panel {
+        width: calc(100vw - 40px) !important;
+        height: 40vh !important;
+        left: 20px !important;
+        top: auto !important;
+        bottom: 0 !important;
+        border-radius: 20px 20px 0 0 !important;
+    }
+    .prop-val {
+        word-break: break-all !important;
+    }
+    .prop-row {
+        line-height: 36px !important;
+    }
+}
+
+/* Project Tree Panel */
+#tree-panel {
+    position: absolute;
+    left: 20px;
+    top: 80px;
+    width: 450px !important;
+    min-width: 350px;
+    resize: horizontal;
+    overflow: auto; /* Чтобы resize работал корректно вместе с прокруткой */
+    max-height: calc(100vh - 100px);
+    background: rgba(250, 247, 242, 0.95);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 15px;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    visibility: visible !important;
+    min-height: 100px;
+}
+#tree-panel.hidden { display: none !important; }
+.tree-search-container { margin-bottom: 10px; }
+
+/* Tree content area - critical for visibility */
+#tree-content {
+    min-height: 200px;
+    max-height: 60vh;
+    overflow-y: auto;
+    flex: 1;
+}
+
+/* Index button - always visible */
+#btn-index-data {
+    display: block !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+}
+.tree-search-container input { width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; box-sizing: border-box; }
+.tree-node { margin-left: 15px; cursor: pointer; user-select: none; }
+.tree-node-title {
+    display: grid;
+    grid-template-columns: 20px 1fr 24px;
+    align-items: start;
+    gap: 8px;
+    padding: 6px 0;
+    line-height: 1.3;
+}
+.tree-node-title:hover { background: rgba(0,0,0,0.05); }
+.tree-toggle { width: 20px; text-align: center; font-weight: bold; cursor: pointer; }
+.tree-name {
+    word-break: normal;
+    overflow-wrap: break-word;
+    font-size: 13px;
+    padding-top: 2px;
+}
+.tree-name small {
+    display: block;
+    color: var(--ink3);
+    font-size: 10px;
+    margin-top: 2px;
+}
+.tree-eye {
+    text-align: center;
+    padding-top: 2px;
+    cursor: pointer;
+}
+/* Стили для активной кнопки Дерева */
+.tool-btn.active {
+    background: #ffc107 !important;
+    color: #000 !important;
+    border-color: #ffc107 !important;
+}
