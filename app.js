@@ -1442,18 +1442,80 @@ cleanSystemName(rawName) {
 
         // Сортировка по алфавиту
         const sortedSystems = Array.from(systems).sort((a, b) => a.localeCompare(b));
-        this.log(`📋 Отсортированные системы: ${sortedSystems.join(', ')}`);
+        this.log(`📋 Отсортированные системы: ${sortedSystems.length} шт.`);
 
+        // === УМНАЯ ГРУППИРОВКА ПО КАТЕГОРИЯМ ===
+        
+        // Функция определения категории системы по названию
+        const categorizeSystem = (name) => {
+            const n = name.toUpperCase();
+            if (n.includes('ВЕНТ') || n.includes('ВОЗДУХ') || n.includes('ПРИТОЧ') || n.includes('ВЫТЯЖ') || n.includes('КЛАПАН') || n.includes('4АПР') || n.includes('КОНДИЦ')) return 'vent';
+            if (n.includes('ТРУБ') || n.includes('КРАН') || n.includes('ЗАДВИЖ') || n.includes('НАСОС') || n.includes('РАДИАТ') || n.includes('ТЕПЛ') || n.includes('ВОДО') || n.includes('КАНАЛ') || n.includes('013G')) return 'pipe';
+            if (n.includes('УРОВЕНЬ') || n.includes('ЭТАЖ') || n.includes('ПЛАН') || n.includes('КРОВЛ') || n.includes('ЗЕМЛ') || /^\d/.test(n)) return 'levels';
+            if (n.includes('ОБОРУД') || n.includes('ЩИТ') || n.includes('ДАТЧИК') || n.includes('ПРИБОР')) return 'equip';
+            return 'other';
+        };
+
+        const categories = {
+            vent: { label: '🌬️ ВЕНТИЛЯЦИЯ', items: [] },
+            pipe: { label: '💧 ТРУБОПРОВОДЫ', items: [] },
+            levels: { label: '📏 УРОВНИ', items: [] },
+            equip: { label: '⚡ ОБОРУДОВАНИЕ', items: [] },
+            other: { label: '📦 ПРОЧЕЕ', items: [] }
+        };
+
+        // Распределяем системы по категориям
         sortedSystems.forEach(sys => {
-            const btn = document.createElement('button');
-            btn.className = 'system-tag';
-            btn.textContent = sys.toUpperCase();
-            btn.onclick = () => this.toggleSystemIsolation(sys, btn);
-            list.appendChild(btn);
+            const cat = categorizeSystem(sys);
+            categories[cat].items.push(sys);
+        });
+
+        // Создаем вкладки и контент
+        let firstTab = true;
+        
+        Object.keys(categories).forEach(catKey => {
+            const catData = categories[catKey];
+            if (catData.items.length === 0) return; // Пропускаем пустые категории
+
+            // 1. Создаем заголовок категории (как кнопку-таб)
+            const tabHeader = document.createElement('div');
+            tabHeader.className = `system-category-tab${firstTab ? ' active' : ''}`;
+            tabHeader.textContent = `${catData.label} (${catData.items.length})`;
+            tabHeader.onclick = () => {
+                // Переключение табов
+                document.querySelectorAll('.system-category-tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.system-category-content').forEach(c => c.style.display = 'none');
+                tabHeader.classList.add('active');
+                document.getElementById(`sys-cat-${catKey}`).style.display = 'flex';
+            };
+            list.appendChild(tabHeader);
+
+            // 2. Создаем контейнер для кнопок этой категории
+            const contentDiv = document.createElement('div');
+            contentDiv.id = `sys-cat-${catKey}`;
+            contentDiv.className = 'system-category-content';
+            contentDiv.style.display = firstTab ? 'flex' : 'none';
+            
+            // Генерируем кнопки внутри категории
+            catData.items.forEach(sysName => {
+                const btn = document.createElement('button');
+                btn.className = 'system-tag';
+                btn.textContent = sysName.toUpperCase();
+                btn.title = `Изолировать систему: ${sysName}`;
+                btn.onclick = (e) => {
+                    e.stopPropagation();
+                    this.toggleSystemIsolation(sysName, btn);
+                };
+                contentDiv.appendChild(btn);
+            });
+
+            list.appendChild(contentDiv);
+            
+            if (firstTab) firstTab = false; // Только первый таб активен
         });
 
         container.style.display = 'block';
-        this.log('✅ Контейнер систем отображен');
+        this.log(`✅ Системы распределены по ${Object.values(categories).filter(c => c.items.length > 0).length} категориям`);
     }
 
     toggleSystemIsolation(systemName, btnElement) {
