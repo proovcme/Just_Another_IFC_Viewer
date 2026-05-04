@@ -1125,7 +1125,7 @@ class BIMApp {
     const progressText = document.getElementById('index-progress');
     const manager = this.loader.ifcManager;
 
-    if (this.loadedModels.length === 0) {
+    if (this.loadedModels.size === 0) {
         this.log('⚠️ Нет загруженных моделей для индексации');
         return;
     }
@@ -1140,10 +1140,9 @@ class BIMApp {
     const indexDataGlobal = {}; // Хранилище для всех моделей
 
     try {
-        // Проходим по каждой загруженной модели
-        for (const loadedModel of this.loadedModels) {
-            const modelID = loadedModel.modelID;
-            const modelName = loadedModel.name || `Model_${modelID}`;
+        // Проходим по каждой загруженной модели (исправляем итерацию Map)
+        for (const [modelName, modelData] of this.loadedModels.entries()) {
+            const modelID = modelData.modelID;
             
             this.log(`🔍 Обработка модели: ${modelName} (ID: ${modelID})`);
             progressText.textContent = `Модель: ${modelName.substring(0, 20)}...`;
@@ -1224,7 +1223,6 @@ class BIMApp {
             }
 
             // ШАГ 3: Fallback - прямое чтение свойств Name/Tag/ObjectType у элементов без Psets
-            // getAllLines может отсутствовать в некоторых версиях web-ifc-three, поэтому используем альтернативу
             const indexedIds = new Set(Object.keys(indexData).map(Number));
             let directReadCount = 0;
             
@@ -1245,7 +1243,7 @@ class BIMApp {
                         if (nameVal && typeof nameVal === 'string' && nameVal.trim().length > 2 && !nameVal.startsWith('Ifc')) {
                             indexData[expressID] = { s: nameVal.trim() };
                             directReadCount++;
-                            continue; // Переходим к следующему
+                            continue;
                         }
                     }
                     
