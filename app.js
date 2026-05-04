@@ -299,7 +299,9 @@ class BIMApp {
 
     bindEvents() {
         window.addEventListener('resize', () => this.onResize());
-        window.addEventListener('dblclick', (e) => this.onDoubleClick(e));
+        
+        // Обработчик dblclick на канвасе для выделения элементов
+        this.renderer.domElement.addEventListener('dblclick', (e) => this.onDoubleClick(e));
         
         this.renderer.domElement.addEventListener('pointerdown', (e) => {
             this.pointerDownPos.set(e.clientX, e.clientY);
@@ -1264,6 +1266,33 @@ class BIMApp {
     }
 
     renderSystemsList() {
+        // Проверка наличия контейнера, создание если нет
+        let container = document.getElementById('systems-container');
+        if (!container) {
+            const btnIndex = document.getElementById('btn-index-data');
+            if (!btnIndex) {
+                this.log('⚠️ Кнопка индексации не найдена, пропускаем создание контейнера систем');
+                return;
+            }
+            
+            // Создаем контейнер динамически
+            container = document.createElement('div');
+            container.id = 'systems-container';
+            container.style.cssText = 'padding: 0 10px 10px 10px; display: none;';
+            container.innerHTML = `
+                <div style="font-size: 11px; color: var(--ink3); margin-bottom: 8px;">НАЙДЕННЫЕ СИСТЕМЫ:</div>
+                <div id="systems-list" style="display: flex; flex-wrap: wrap; gap: 5px;"></div>
+            `;
+            btnIndex.parentNode.insertBefore(container, btnIndex.nextSibling);
+            this.log('✅ Динамически создан контейнер #systems-container');
+        }
+        
+        const list = document.getElementById('systems-list');
+        if (!list) {
+            this.log('⚠️ Контейнер #systems-list не найден внутри #systems-container');
+            return;
+        }
+        
         const nodes = document.querySelectorAll('.tree-node[data-system]');
         const systems = new Set();
         
@@ -1274,8 +1303,6 @@ class BIMApp {
             }
         });
 
-        const container = document.getElementById('systems-container');
-        const list = document.getElementById('systems-list');
         list.innerHTML = '';
 
         if (systems.size === 0) {
