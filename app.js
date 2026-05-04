@@ -105,9 +105,9 @@ class BIMApp {
         this.cubeScene = null;
         this.cubeCamera = null;
         this.cubeRenderer = null;
-        this.loadedModels = new Map();
+        this.loadedModels = new Map(); // Map<modelName, {mesh, modelID, visible}>
         this.currentSelected = { id: null, modelId: null };
-        this.hiddenElements = new Set();
+        this.hiddenElements = new Map(); // Map<modelID, Set<expressID>>
         this.currentModelID = null;
         this.currentModelName = null;
         this.xrayMode = false;
@@ -136,6 +136,8 @@ class BIMApp {
             transparent: true,
             opacity: 0.5
         });
+        this.systemMaterial = null;
+        this.propertyCache = new Map(); // Кэш свойств для оптимизации
 
         this.elements = {
             container: document.getElementById('container'),
@@ -256,8 +258,43 @@ class BIMApp {
         const debugLog = document.getElementById('debug-log');
         if (!debugLog) return;
         const time = new Date().toLocaleTimeString();
-        debugLog.innerHTML += `[${time}] ${message}\n`;
+        const timestampedMsg = `[${time}] ${message}`;
+        debugLog.innerHTML += `${timestampedMsg}\n`;
         debugLog.scrollTop = debugLog.scrollHeight;
+        console.log(timestampedMsg);
+    }
+
+    /**
+     * Безопасное получение свойств элемента с кэшированием и обработкой ошибок web-ifc
+     */
+    async getSafeProperties(modelID, expressID, useCache = true) {
+        const cacheKey = `${modelID}_${expressID}`;
+        
+        if (useCache && this.propertyCache.has(cacheKey)) {
+            return this.propertyCache.get(cacheKey);
+        }
+
+        try {
+            const props = await this.loader.ifcManager.getItemProperties(modelID, expressID);
+            this.propertyCache.set(cacheKey, props);
+            return props;
+        } catch (e) {
+            this.log(`⚠️ Ошибка получения свойств для ID ${expressID} в модели ${modelID}: ${e.message}`);
+            return null;
+        }
+    }
+
+    /**
+     * Безопасное получение PSet с обработкой ошибок ядра
+     */
+    async getSafePropertySets(modelID, expressID) {
+        try {
+            const psets = await this.loader.ifcManager.getPropertySets(modelID, expressID, true);
+            return psets || [];
+        } catch (e) {
+            this.log(`⚠️ Ошибка получения PSet для ID ${expressID}: ${e.message}`);
+            return [];
+        }
     }
 
     bindEvents() {
@@ -732,15 +769,21 @@ class BIMApp {
 
     async indexSpaces() {
         this.allSpaces = [];
-        for (const [name, model] of this.loadedModels) {
-            const ids = await this.loader.ifcManager.getAllItemsOfType(model.modelID, 'IFCSPACE', false);
-            for (const id of ids) {
-                const props = await this.loader.ifcManager.getItemProperties(model.modelID, id);
-                this.allSpaces.push({
-                    modelID: model.modelID,
-                    id: id,
-                    name: props.Name?.value || props.LongName?.value || `ID ${id}`
-                });
+        for (const [name, modelData] of this.loadedModels) {
+            if (!modelData || !modelData.mesh) continue;
+            
+            try {
+                const ids = await this.loader.ifcManager.getAllItemsOfType(modelData.modelID, 'IFCSPACE', false);
+                for (const id of ids) {
+                    const props = await this.getSafeProperties(modelData.modelID, id);
+                    this.allSpaces.push({
+                        modelID: modelData.modelID,
+                        id: id,
+                        name: props?.Name?.value || props?.LongName?.value || `ID ${id}`
+                    });
+                }
+            } catch (e) {
+                this.log(`⚠️ Ошибка индексации помещений в ${name}: ${e.message}`);
             }
         }
         this.setStatus(`Найдено помещений: ${this.allSpaces.length}`);
@@ -805,13 +848,27 @@ class BIMApp {
                 const url = URL.createObjectURL(new Blob([await file.arrayBuffer()]));
                 const m = await this.loader.loadAsync(url);
                 m.name = file.name;
+                
+                // Сохраняем модель как объект с явным разделением mesh и modelID
+                const modelData = {
+                    mesh: m,
+                    modelID: m.modelID,
+                    visible: true
+                };
+                
                 this.scene.add(m);
-                this.loadedModels.set(file.name, m);
+                this.loadedModels.set(file.name, modelData);
                 URL.revokeObjectURL(url);
+                
                 if (this.sectionMode) { this.calcBoundingBox(); this.applyClipping(); }
                 this.renderLocalList();
                 this.needsUpdate = true;
+                
+                // Строим дерево для загруженной модели
+                this.log(`Построение дерева для ${file.name}...`);
+                await this.buildProjectTree(m.modelID, file.name);
             } catch (e) {
+                this.log(`⚠️ Ошибка загрузки ${file.name}: ${e.message}`);
                 console.error(`Ошибка: ${file.name}`, e);
             }
         }
@@ -828,10 +885,11 @@ class BIMApp {
             list.innerHTML = '<div style="font-size:11px;color:#999;padding:5px 0;">Сборка пуста</div>';
             return;
         }
-        this.loadedModels.forEach((m, name) => {
+        this.loadedModels.forEach((modelData, name) => {
             const item = document.createElement('div');
             item.className = 'model-item';
-            const isVis = m.visible;
+            // modelData - это объект {mesh, modelID, visible}
+            const isVis = modelData.visible;
             const visIcon = isVis ? '👁️' : '🕶️';
             const visStyle = isVis ? '' : 'text-decoration:line-through;opacity:0.5;';
             item.innerHTML = `
@@ -848,9 +906,10 @@ class BIMApp {
     }
 
     unloadModel(name) {
-        const m = this.loadedModels.get(name);
-        if(m) {
-            this.loader.ifcManager.close(m.modelID, this.scene);
+        const modelData = this.loadedModels.get(name);
+        if(modelData) {
+            const m = modelData.mesh;
+            this.loader.ifcManager.close(modelData.modelID, this.scene);
             this.scene.remove(m);
             this.deepDispose(m);
             this.loadedModels.delete(name);
@@ -884,24 +943,34 @@ class BIMApp {
     }
 
     async showProperties(modelID, id) {
-        const props = await this.loader.ifcManager.getItemProperties(modelID, id);
-        const psets = await this.loader.ifcManager.getPropertySets(modelID, id, true);
+        const [props, psets] = await Promise.all([
+            this.getSafeProperties(modelID, id),
+            this.getSafePropertySets(modelID, id)
+        ]);
+
         let h = `<div class="prop-group-title">Идентификация</div>
                   <div class="prop-row"><span class="prop-name">ID</span><span class="prop-val">${id}</span></div>`;
-        ['Name', 'ObjectType', 'Tag'].forEach(k => {
-            if (props && props[k]) {
-                const val = (props[k].value || props[k]);
-                h += `<div class="prop-row"><span class="prop-name">${k}</span><span class="prop-val">${val} <span class="copy-icon" data-value="${val}" title="Копировать">📋</span></span></div>`;
-            }
-        });
-        if (psets) psets.forEach(ps => {
-            if (!ps.HasProperties?.length) return;
-            h += `<div class="prop-group-title">${ps.Name?.value}</div>`;
-            ps.HasProperties.forEach(p => {
-                const val = (p.NominalValue?.value || '-');
-                h += `<div class="prop-row"><span class="prop-name">${p.Name?.value}</span><span class="prop-val">${val} <span class="copy-icon" data-value="${val}" title="Копировать">📋</span></span></div>`;
+        
+        if (props) {
+            ['Name', 'ObjectType', 'Tag'].forEach(k => {
+                if (props[k]) {
+                    const val = (props[k].value || props[k]);
+                    h += `<div class="prop-row"><span class="prop-name">${k}</span><span class="prop-val">${val} <span class="copy-icon" data-value="${val}" title="Копировать">📋</span></span></div>`;
+                }
             });
-        });
+        }
+        
+        if (psets && psets.length > 0) {
+            psets.forEach(ps => {
+                if (!ps.HasProperties?.length) return;
+                h += `<div class="prop-group-title">${ps.Name?.value || 'PSet'}</div>`;
+                ps.HasProperties.forEach(p => {
+                    const val = (p.NominalValue?.value || '-');
+                    h += `<div class="prop-row"><span class="prop-name">${p.Name?.value || 'Property'}</span><span class="prop-val">${val} <span class="copy-icon" data-value="${val}" title="Копировать">📋</span></span></div>`;
+                });
+            });
+        }
+        
         this.elements.propsContent.innerHTML = h;
         this.elements.propsPanel.classList.remove('hidden');
     }
@@ -913,8 +982,8 @@ class BIMApp {
         this.needsUpdate = true;
     }
 
-    async buildProjectTree(modelID) {
-        this.log(`ЗАПРОС: Пространственной структуры для модели ${modelID}...`);
+    async buildProjectTree(modelID, modelName) {
+        this.log(`ЗАПРОС: Пространственной структуры для модели ${modelID} (${modelName})...`);
         const manager = this.loader.ifcManager;
         const treeContent = document.getElementById('tree-content');
         if (!treeContent) {
@@ -928,12 +997,16 @@ class BIMApp {
             const project = await manager.getSpatialStructure(modelID);
             if (!project) return;
 
-            const createNode = async (node) => {
+            const createNode = async (node, currentModelID, currentModelName) => {
                 const div = document.createElement('div');
                 div.className = 'tree-node';
                 
+                // Добавляем modelID и modelName в атрибуты для мультимодельности
+                div.setAttribute('data-model-id', currentModelID);
+                div.setAttribute('data-model-name', currentModelName);
+                
                 const name = typeof getHumanName === 'function' ? 
-                    await getHumanName(manager, modelID, node.expressID, node.type) : 
+                    await getHumanName(manager, currentModelID, node.expressID, node.type) : 
                     (node.name || node.type || `ID ${node.expressID}`);
                     
                 div.setAttribute('data-name', name.toLowerCase());
@@ -949,14 +1022,14 @@ class BIMApp {
                 `;
 
                 titleDiv.querySelector('.tree-name').onclick = async () => {
-                    if (typeof this.focusOnElement === 'function') this.focusOnElement(modelID, node.expressID);
-                    if (typeof this.showProperties === 'function') await this.showProperties(modelID, node.expressID);
+                    if (typeof this.focusOnElement === 'function') this.focusOnElement(currentModelID, node.expressID);
+                    if (typeof this.showProperties === 'function') await this.showProperties(currentModelID, node.expressID);
                 };
 
                 const eye = titleDiv.querySelector('.tree-eye');
                 eye.onclick = (e) => {
                     e.stopPropagation();
-                    if (typeof this.toggleVisibility === 'function') this.toggleVisibility(modelID, node, eye);
+                    if (typeof this.toggleVisibility === 'function') this.toggleVisibility(currentModelID, node, eye);
                 };
 
                 div.appendChild(titleDiv);
@@ -973,14 +1046,14 @@ class BIMApp {
                     };
 
                     for (const child of node.children) {
-                        childrenContainer.appendChild(await createNode(child));
+                        childrenContainer.appendChild(await createNode(child, currentModelID, currentModelName));
                     }
                     div.appendChild(childrenContainer);
                 }
                 return div;
             };
 
-            treeContent.appendChild(await createNode(project));
+            treeContent.appendChild(await createNode(project, modelID, modelName));
             this.log('Дерево построено. Интерактивность восстановлена.');
 
             const searchInput = document.getElementById('tree-search');
@@ -1230,24 +1303,34 @@ class BIMApp {
         });
 
         const manager = this.loader.ifcManager;
-        const model = this.loadedModels.get(this.currentModelName);
-        if (!model) return;
-        const modelID = model.modelID;
 
         if (isActive) {
-            manager.removeSubset(modelID, undefined, 'system-isolation');
-            model.visible = true;
+            // Деактивация: очистить все subset'ы изоляции и вернуть видимость всем моделям
+            this.loadedModels.forEach((modelData, modelName) => {
+                if (modelData && modelData.modelID !== undefined) {
+                    manager.removeSubset(modelData.modelID, undefined, 'system-isolation');
+                    modelData.mesh.visible = true;
+                }
+            });
         } else {
             btnElement.classList.add('active');
             btnElement.style.borderColor = '#4CAF50';
             btnElement.style.background = 'rgba(76, 175, 80, 0.1)';
 
             const nodes = document.querySelectorAll('.tree-node');
-            const ids = [];
+            const idsByModel = new Map(); // Map<modelID, Array<expressID>>
+
+            // Собираем ID элементов по моделям из дерева
             nodes.forEach(node => {
                 const sys = node.getAttribute('data-system');
                 if (sys && sys.includes(systemName)) {
-                    ids.push(parseInt(node.getAttribute('data-id')));
+                    const modelID = parseInt(node.getAttribute('data-model-id'));
+                    const expressID = parseInt(node.getAttribute('data-id'));
+                    
+                    if (!idsByModel.has(modelID)) {
+                        idsByModel.set(modelID, []);
+                    }
+                    idsByModel.get(modelID).push(expressID);
                 }
             });
 
@@ -1260,15 +1343,28 @@ class BIMApp {
                 });
             }
 
-            model.visible = false;
-            
-            manager.createSubset({
-                modelID: modelID,
-                ids: ids,
-                material: this.systemMaterial,
-                scene: this.scene,
-                removePrevious: true,
-                customID: 'system-isolation'
+            // Скрываем все модели и создаем subset только для нужных элементов
+            this.loadedModels.forEach((modelData, modelName) => {
+                if (modelData && modelData.modelID !== undefined) {
+                    const modelID = modelData.modelID;
+                    const idsToIsolate = idsByModel.get(modelID) || [];
+                    
+                    if (idsToIsolate.length > 0) {
+                        modelData.mesh.visible = false;
+                        
+                        manager.createSubset({
+                            modelID: modelID,
+                            ids: idsToIsolate,
+                            material: this.systemMaterial,
+                            scene: this.scene,
+                            removePrevious: true,
+                            customID: 'system-isolation'
+                        });
+                    } else {
+                        // Если в модели нет элементов этой системы, просто скрываем её
+                        modelData.mesh.visible = false;
+                    }
+                }
             });
         }
         this.needsUpdate = true;
@@ -1276,20 +1372,46 @@ class BIMApp {
 
     toggleVisibility(modelID, node, eyeElement) {
         const manager = this.loader.ifcManager;
-        if (!this.hiddenElements) this.hiddenElements = new Set();
+        
+        // Инициализация Map для модели если нет
+        if (!this.hiddenElements.has(modelID)) {
+            this.hiddenElements.set(modelID, new Set());
+        }
+        const modelHiddenSet = this.hiddenElements.get(modelID);
 
         const idsToToggle = getAllIds(node);
-        const isHidden = this.hiddenElements.has(node.expressID);
+        const isHidden = modelHiddenSet.has(node.expressID);
 
         if (isHidden) {
-            idsToToggle.forEach(id => this.hiddenElements.delete(id));
+            // Показать элементы
+            idsToToggle.forEach(id => modelHiddenSet.delete(id));
             eyeElement.style.opacity = '1';
             manager.createSubset({ modelID: modelID, ids: idsToToggle, removePrevious: false });
         } else {
-            idsToToggle.forEach(id => this.hiddenElements.add(id));
+            // Скрыть элементы
+            idsToToggle.forEach(id => modelHiddenSet.add(id));
             eyeElement.style.opacity = '0.3';
             manager.removeFromSubset(modelID, idsToToggle);
         }
+        this.needsUpdate = true;
+    }
+
+    resetVisibility() {
+        // Очистка всех скрытых элементов для всех моделей
+        this.hiddenElements.clear();
+        
+        // Восстановление видимости через showAllItems для каждой модели
+        this.loadedModels.forEach((modelData, modelName) => {
+            if (modelData && modelData.modelID !== undefined) {
+                try {
+                    this.loader.ifcManager.showAllItems(modelData.modelID);
+                } catch (e) {
+                    this.log(`⚠️ Ошибка сброса видимости для ${modelName}: ${e.message}`);
+                }
+            }
+        });
+        
+        this.clearHighlights();
         this.needsUpdate = true;
     }
 
@@ -1351,10 +1473,18 @@ class BIMApp {
                     this.log('Начало парсинга');
                     const m = await this.loader.loadAsync(url);
                     m.name = name;
+                    
+                    // Сохраняем модель как объект с явным разделением mesh и modelID
+                    const modelData = {
+                        mesh: m,
+                        modelID: m.modelID,
+                        visible: true
+                    };
+                    
                     this.currentModelName = name;
                     this.currentModelID = m.modelID;
                     this.scene.add(m);
-                    this.loadedModels.set(name, m);
+                    this.loadedModels.set(name, modelData);
                     URL.revokeObjectURL(url);
                     
                     this.log('Геометрия построена. Рендеринг 3D-сцены...');
@@ -1366,7 +1496,7 @@ class BIMApp {
                     btn.disabled = false;
                     
                     this.log('Сборка пространственного дерева (Tree)...');
-                    await this.buildProjectTree(m.modelID);
+                    await this.buildProjectTree(m.modelID, name);
                     this.log('Дерево построено.');
                 } catch (e) {
                     this.setStatus(`Ошибка загрузки ${name}`);
@@ -1444,9 +1574,10 @@ class BIMApp {
     }
     
     toggleModelVis(n) {
-        const m = this.loadedModels.get(n);
-        if(m) {
-            m.visible = !m.visible;
+        const modelData = this.loadedModels.get(n);
+        if(modelData) {
+            modelData.visible = !modelData.visible;
+            modelData.mesh.visible = modelData.visible;
             this.clearHighlights();
             this.renderLocalList();
             this.needsUpdate = true;
@@ -1456,7 +1587,8 @@ class BIMApp {
     toggleXRay() {
         this.xrayMode = !this.xrayMode;
         this.elements.btnXray.classList.toggle('active', this.xrayMode);
-        this.loadedModels.forEach(m => {
+        this.loadedModels.forEach(modelData => {
+            const m = modelData.mesh;
             const a = (mat) => {
                 mat.transparent = this.xrayMode;
                 mat.opacity = this.xrayMode ? CONFIG.XRAY_OPACITY : 1;
@@ -1487,14 +1619,18 @@ class BIMApp {
     
     fitCamera() {
         const b = new THREE.Box3();
-        this.loadedModels.forEach(m => { if(m.visible) b.expandByObject(m); });
+        this.loadedModels.forEach(modelData => {
+            if (modelData && modelData.visible && modelData.mesh) {
+                b.expandByObject(modelData.mesh);
+            }
+        });
         if (b.isEmpty()) return;
         const c = b.getCenter(new THREE.Vector3());
         const s = b.getSize(new THREE.Vector3());
         const z = Math.max(s.x, s.y, s.z)*1.5;
         this.camera.position.set(c.x+z, c.y+z, c.z+z);
-        this.controls.target.set(0, 0, 0);
-        this.camera.lookAt(0,0,0);
+        this.controls.target.copy(c);
+        this.camera.lookAt(c);
         this.controls.update();
         this.needsUpdate = true;
     }
@@ -1509,7 +1645,18 @@ class BIMApp {
     }
     
     resetVisibility() {
-        this.loadedModels.forEach(m => this.loader.ifcManager.showAllItems(m.modelID));
+        // Очистка скрытых элементов для всех моделей
+        this.hiddenElements.clear();
+        
+        this.loadedModels.forEach(modelData => {
+            if (modelData && modelData.modelID !== undefined) {
+                try {
+                    this.loader.ifcManager.showAllItems(modelData.modelID);
+                } catch (e) {
+                    this.log(`⚠️ Ошибка showAllItems: ${e.message}`);
+                }
+            }
+        });
         this.clearHighlights();
         this.needsUpdate = true;
     }
