@@ -1151,6 +1151,51 @@ class BIMApp {
             localStorage.removeItem(cacheKey);
             const indexData = {};
 
+            // === ШАГ 0: Чтение систем через IfcRelAssignsToGroup (НАТИВНЫЙ IFC) ===
+            // Это самый правильный способ: элементы назначаются на системы через эту связь
+            let systemsFromGraph = 0;
+            try {
+                this.log(`🌐 Сканирование графа IfcRelAssignsToGroup...`);
+                
+                // Получаем все связи назначения к группе
+                const rels = await manager.getAllItemsOfType(modelID, 'IFCRELASSIGNSTOGROUP', false);
+                this.log(`🔗 Найдено связей IfcRelAssignsToGroup: ${rels.length}`);
+                
+                for (const relID of rels) {
+                    const rel = await manager.getItemProperties(modelID, relID);
+                    if (!rel || !rel.RelatingGroup || !rel.RelatedObjects) continue;
+                    
+                    // Проверяем, является ли группа системой (IfcSystem)
+                    const groupType = rel.RelatingGroup.type;
+                    const isSystem = groupType && (
+                        groupType === 'IFCSYSTEM' || 
+                        (typeof groupType === 'number' && groupType === 938) // 938 = IFCSYSTEM ID
+                    );
+                    
+                    if (!isSystem) continue;
+                    
+                    // Получаем имя системы
+                    const sysProps = await manager.getItemProperties(modelID, rel.RelatingGroup.value);
+                    const sysName = sysProps && sysProps.Name ? sysProps.Name.value : null;
+                    if (!sysName) continue;
+                    
+                    const cleanedSysName = this.cleanSystemName(sysName);
+                    if (!cleanedSysName) continue;
+                    
+                    // Назначаем всем связанным объектам эту систему
+                    for (const objRef of rel.RelatedObjects) {
+                        const elemID = objRef.value;
+                        if (elemID && !indexData[elemID]) {
+                            indexData[elemID] = { s: cleanedSysName };
+                            systemsFromGraph++;
+                        }
+                    }
+                }
+                this.log(`✅ Найдено систем через граф: ${systemsFromGraph}`);
+            } catch (e) {
+                this.log(`⚠️ Ошибка чтения графа систем: ${e.message}`);
+            }
+
             // ШАГ 1: Пытаемся получить граф свойств через IFCRELDEFINESBYPROPERTIES
             let allProps = null;
             
