@@ -1324,23 +1324,41 @@ class BIMApp {
 }
 
 /**
- * Очистка имени системы от технического мусора
+ * Очистка и нормализация имени системы
+ * Отсекает GUID, технические суффиксы и приводит к единому виду
  */
 cleanSystemName(rawName) {
     if (!rawName || typeof rawName !== 'string') return null;
     
     let name = rawName.trim();
-
-    // Фильтр мусора:
-    // 1. Содержит скобки и двоеточия в начале (технические префиксы)
-    if (/^\w+\):/.test(name)) return null;
-    // 2. Содержит GUID-подобные строки
+    
+    // 1. Удаляем хвосты вида :1234567 (Revit Element ID)
+    // Пример: "В1 137:1945891" -> "В1 137"
+    name = name.replace(/:\d+$/, '');
+    
+    // 2. Удаляем префиксы семейств fa:, id: и т.д.
+    // Пример: "fa:В1 137" -> "В1 137"
+    name = name.replace(/^(fa|id|guid):/i, '');
+    
+    // 3. Если строка начинается с мусорных символов (скобки, спецсимволы) - обрезаем
+    // Пример: "013G1679):СТАНДАРТ:..." -> отбрасываем полностью если нет полезного начала
+    if (/^\w+\):/.test(name)) {
+        // Пытаемся вытащить часть после двоеточия, если там есть кириллица или буквы
+        const parts = name.split(':');
+        const usefulPart = parts.find(p => /[а-яА-Яa-zA-Z]/.test(p) && !/STANDARD|GUID/i.test(p));
+        if (usefulPart) name = usefulPart.trim();
+        else return null;
+    }
+    
+    // 4. Удаляем лишние пробелы, возникшие после чистки
+    name = name.replace(/\s+/g, ' ').trim();
+    
+    // 5. Фильтруем явный мусор
+    if (name.length < 2 || name === '0' || name === 'System') return null;
+    
+    // 6. Фильтр GUID-подобных строк
     if (/[0-9a-f]{8}-[0-9a-f]{4}/i.test(name)) return null;
-    // 3. Слишком длинное и содержит спецсимволы
-    if (name.length > 100 && name.includes(':')) return null;
-    // 4. Явные маркеры стандартов без полезной информации
-    if (name.includes('STANDARD') && name.split(':').length > 3) return null;
-
+    
     return name;
 }
 
