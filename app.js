@@ -1377,30 +1377,58 @@ cleanSystemName(rawName) {
     
     let name = rawName.trim();
     
-    // 1. Удаляем хвосты вида :1234567 (Revit Element ID)
+    // 0. Сохраняем оригинал для логов если нужно
+    const originalName = name;
+    
+    // 1. Удаляем хвосты вида :1234567 (Revit Element ID в конце строки)
     // Пример: "В1 137:1945891" -> "В1 137"
-    name = name.replace(/:\d+$/, '');
+    // Но НЕ трогаем если это часть названия типа "fa:семейство"
+    if (/: \d+$/.test(name)) {
+        name = name.replace(/:\d+$/, '');
+    }
     
-    // 2. Удаляем префиксы семейств fa:, id: и т.д.
-    // Пример: "fa:В1 137" -> "В1 137"
-    name = name.replace(/^(fa|id|guid):/i, '');
+    // 2. Обработка случаев с явными префиксами семейств Revit (fa:, id:, GUID:)
+    // Если строка НАЧИНАЕТСЯ с такого префикса - удаляем его
+    if (/^(fa|id|guid):/i.test(name)) {
+        name = name.replace(/^(fa|id|guid):/i, '');
+    }
     
-    // 3. Если строка содержит двоеточие (семейство Revit), берем только часть ДО двоеточия
-    // Пример: "Воздуховод круглого сечения:ADSK_Без огнезащиты..." -> "Воздуховод круглого сечения"
+    // 3. Обработка двоеточий в названии (Семейство:Тип в Revit)
+    // Стратегия: если до двоеточия есть кириллица или это похоже на тип оборудования - берем ДО двоеточия
+    // Иначе пробуем взять ПОСЛЕ двоеточия если там полезное имя
     if (name.includes(':')) {
         const parts = name.split(':');
-        name = parts[0].trim();
+        const beforeColon = parts[0].trim();
+        const afterColon = parts.slice(1).join(':').trim(); // На случай нескольких двоеточий
+        
+        // Проверяем, выглядит ли часть ДО двоеточия как осмысленное название системы
+        const hasCyrillicBefore = /[а-яА-Я]/.test(beforeColon);
+        const hasLettersBefore = /[a-zA-Z]/.test(beforeColon);
+        const isShortBefore = beforeColon.length < 4;
+        
+        // Проверяем часть ПОСЛЕ двоеточия
+        const hasCyrillicAfter = /[а-яА-Я]/.test(afterColon);
+        const looksLikeStandard = /стандарт|standard|gost/i.test(afterColon);
+        const looksLikeFamily = /^[A-Z0-9_-]+$/i.test(afterColon.replace(/\s/g, '')); // ADSK_Без огнезащиты
+        
+        // ПРИОРИТЕТ 1: Если ДО двоеточия есть кириллица и это не короткий код - берем её
+        if ((hasCyrillicBefore || (hasLettersBefore && !isShortBefore)) && !looksLikeFamily) {
+            name = beforeColon;
+        }
+        // ПРИОРИТЕТ 2: Если ПОСЛЕ двоеточия есть кириллица и это не стандарт/GUID - берем её
+        else if (hasCyrillicAfter && !looksLikeStandard && !looksLikeFamily) {
+            name = afterColon;
+        }
+        // ПРИОРИТЕТ 3: Иначе оставляем часть до двоеточия (наиболее частый случай)
+        else {
+            name = beforeColon;
+        }
     }
     
-    // 4. Если строка начинается с мусорных символов (скобки, спецсимволы) - обрезаем
-    // Пример: "013G1679):СТАНДАРТ:..." -> отбрасываем полностью если нет полезного начала
-    if (/^\w+\):/.test(name)) {
-        // Пытаемся вытащить часть после двоеточия, если там есть кириллица или буквы
-        const parts = name.split(':');
-        const usefulPart = parts.find(p => /[а-яА-Яa-zA-Z]/.test(p) && !/STANDARD|GUID/i.test(p));
-        if (usefulPart) name = usefulPart.trim();
-        else return null;
-    }
+    // 4. Чистка от мусорных окончаний в скобках (но оставляем полезные обозначения)
+    // Пример: "RA-G (прямой) (013G1675" -> "RA-G (прямой)"
+    // Удаляем незакрытые скобки с цифрами
+    name = name.replace(/\s*\(\s*\d+[^\)]*$/, '');
     
     // 5. Отсекаем уровни этажей (содержат координаты +31.200 или слова План/Этаж/Кровля)
     if ((name.includes('+') || name.includes('-')) && 
@@ -1408,17 +1436,20 @@ cleanSystemName(rawName) {
         return null;
     }
     
-    // 6. Удаляем лишние пробелы, возникшие после чистки
+    // 6. Удаляем лишние пробелы
     name = name.replace(/\s+/g, ' ').trim();
     
-    // 7. Фильтруем явный мусор
+    // 7. Фильтруем явный мусор и технические имена
     if (name.length < 2 || name === '0' || name === 'System' || name === 'Стандарт') return null;
     
-    // 8. Фильтр GUID-подобных строк и чистых цифр
+    // 8. Фильтр чистых GUID и цифр
     if (/[0-9a-f]{8}-[0-9a-f]{4}/i.test(name) || /^\d+$/.test(name)) return null;
     
-    // 9. Финальная проверка на осмысленность (должна быть хотя бы одна буква)
+    // 9. Финальная проверка: должна быть хотя бы одна буква (кириллица или латиница)
     if (!/[а-яА-Яa-zA-Z]/.test(name)) return null;
+    
+    // 10. Приводим к верхнему регистру для единообразия (опционально, можно убрать)
+    // name = name.toUpperCase();
     
     return name;
 }
