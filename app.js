@@ -1278,12 +1278,17 @@ class BIMApp {
         const list = document.getElementById('systems-list');
         list.innerHTML = '';
 
-        if (systems.size === 0) return;
+        if (systems.size === 0) {
+            container.style.display = 'none';
+            return;
+        }
 
-        systems.forEach(sys => {
+        // Сортировка по алфавиту
+        const sortedSystems = Array.from(systems).sort((a, b) => a.localeCompare(b));
+
+        sortedSystems.forEach(sys => {
             const btn = document.createElement('button');
-            btn.className = 'tool-btn system-tag';
-            btn.style.cssText = 'padding: 4px 8px; font-size: 11px; cursor: pointer; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-color); color: var(--ink-color);';
+            btn.className = 'system-tag';
             btn.textContent = sys.toUpperCase();
             btn.onclick = () => this.toggleSystemIsolation(sys, btn);
             list.appendChild(btn);
@@ -1296,10 +1301,9 @@ class BIMApp {
         const isActive = btnElement.classList.contains('active');
         const allBtns = document.querySelectorAll('.system-tag');
         
+        // Сброс всех активных тегов
         allBtns.forEach(b => {
             b.classList.remove('active');
-            b.style.borderColor = 'var(--border)';
-            b.style.background = 'var(--bg-color)';
         });
 
         const manager = this.loader.ifcManager;
@@ -1308,14 +1312,18 @@ class BIMApp {
             // Деактивация: очистить все subset'ы изоляции и вернуть видимость всем моделям
             this.loadedModels.forEach((modelData, modelName) => {
                 if (modelData && modelData.modelID !== undefined) {
-                    manager.removeSubset(modelData.modelID, undefined, 'system-isolation');
+                    try {
+                        manager.removeSubset(modelData.modelID, undefined, 'system-isolation');
+                    } catch (e) {
+                        this.log(`⚠️ Ошибка удаления subset для модели ${modelName}: ${e.message}`);
+                    }
                     modelData.mesh.visible = true;
                 }
             });
+            this.log(`🔓 Деактивирована изоляция системы: ${systemName}`);
         } else {
+            // Активация
             btnElement.classList.add('active');
-            btnElement.style.borderColor = '#4CAF50';
-            btnElement.style.background = 'rgba(76, 175, 80, 0.1)';
 
             const nodes = document.querySelectorAll('.tree-node');
             const idsByModel = new Map(); // Map<modelID, Array<expressID>>
@@ -1343,29 +1351,41 @@ class BIMApp {
                 });
             }
 
+            let totalElements = 0;
+
             // Скрываем все модели и создаем subset только для нужных элементов
             this.loadedModels.forEach((modelData, modelName) => {
                 if (modelData && modelData.modelID !== undefined) {
                     const modelID = modelData.modelID;
                     const idsToIsolate = idsByModel.get(modelID) || [];
                     
-                    if (idsToIsolate.length > 0) {
-                        modelData.mesh.visible = false;
-                        
-                        manager.createSubset({
-                            modelID: modelID,
-                            ids: idsToIsolate,
-                            material: this.systemMaterial,
-                            scene: this.scene,
-                            removePrevious: true,
-                            customID: 'system-isolation'
-                        });
-                    } else {
-                        // Если в модели нет элементов этой системы, просто скрываем её
-                        modelData.mesh.visible = false;
+                    try {
+                        if (idsToIsolate.length > 0) {
+                            modelData.mesh.visible = false;
+                            
+                            manager.createSubset({
+                                modelID: modelID,
+                                ids: idsToIsolate,
+                                material: this.systemMaterial,
+                                scene: this.scene,
+                                removePrevious: true,
+                                customID: 'system-isolation'
+                            });
+                            
+                            totalElements += idsToIsolate.length;
+                            this.log(`✅ Модель ${modelName}: выделено ${idsToIsolate.length} элементов системы "${systemName}"`);
+                        } else {
+                            // Если в модели нет элементов этой системы, просто скрываем её
+                            modelData.mesh.visible = false;
+                            this.log(`ℹ️ Модель ${modelName}: нет элементов системы "${systemName}", скрыта`);
+                        }
+                    } catch (e) {
+                        this.log(`⚠️ Ошибка создания subset для модели ${modelName}: ${e.message}`);
                     }
                 }
             });
+
+            this.log(`🔒 Активирована изоляция системы: ${systemName} (всего элементов: ${totalElements})`);
         }
         this.needsUpdate = true;
     }
