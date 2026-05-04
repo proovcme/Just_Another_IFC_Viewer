@@ -1224,13 +1224,19 @@ class BIMApp {
             }
 
             // ШАГ 3: Fallback - прямое чтение свойств Name/Tag/ObjectType у элементов без Psets
+            // getAllLines может отсутствовать в некоторых версиях web-ifc-three, поэтому используем альтернативу
             const indexedIds = new Set(Object.keys(indexData).map(Number));
-            const allLines = await manager.getAllLines(modelID);
             let directReadCount = 0;
             
-            for (const expressID of allLines) {
-                if (indexedIds.has(expressID)) continue; // Уже есть из Psets
-                
+            // Собираем все ExpressIDs из дерева для этой модели (используем data-id)
+            const modelTreeNodes = document.querySelectorAll(`.tree-node[data-model-id="${modelID}"]`);
+            const treeExpressIds = Array.from(modelTreeNodes)
+                .map(node => parseInt(node.getAttribute('data-id')))
+                .filter(id => !isNaN(id) && !indexedIds.has(id));
+            
+            this.log(`🔍 Прямое сканирование ${treeExpressIds.length} элементов без Psets...`);
+            
+            for (const expressID of treeExpressIds) {
                 try {
                     // Пробуем прочитать Name напрямую
                     const elemProps = await manager.getItemProperties(modelID, expressID, false);
@@ -1239,6 +1245,7 @@ class BIMApp {
                         if (nameVal && typeof nameVal === 'string' && nameVal.trim().length > 2 && !nameVal.startsWith('Ifc')) {
                             indexData[expressID] = { s: nameVal.trim() };
                             directReadCount++;
+                            continue; // Переходим к следующему
                         }
                     }
                     
@@ -1248,6 +1255,7 @@ class BIMApp {
                         if (tagVal && typeof tagVal === 'string' && tagVal.trim().length > 2) {
                             indexData[expressID] = { s: tagVal.trim() };
                             directReadCount++;
+                            continue;
                         }
                     }
                     
@@ -1257,14 +1265,15 @@ class BIMApp {
                         if (typeVal && typeof typeVal === 'string' && typeVal.trim().length > 2) {
                             indexData[expressID] = { s: typeVal.trim() };
                             directReadCount++;
+                            continue;
                         }
                     }
                 } catch (e) {
                     // Игнорируем ошибки чтения отдельных элементов
                 }
                 
-                // Yield каждые 1000 элементов
-                if (directReadCount % 1000 === 0) {
+                // Yield каждые 500 элементов чтобы не блокировать UI
+                if (directReadCount % 500 === 0) {
                     await new Promise(r => setTimeout(r, 0));
                 }
             }
