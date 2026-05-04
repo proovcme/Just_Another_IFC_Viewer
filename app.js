@@ -1148,11 +1148,22 @@ class BIMApp {
             
             // 1. Пытаемся использовать метод Квена напрямую
             if (typeof manager.getAllProperties === 'function') {
+                this.log('📡 Используем getAllProperties для быстрой выгрузки...');
                 allProps = await manager.getAllProperties(modelID);
+                // Проверяем, что получили данные
+                if (!allProps || (allProps instanceof Map && allProps.size === 0) || (typeof allProps === 'object' && Object.keys(allProps).length === 0)) {
+                    this.log('⚠️ getAllProperties вернул пустой результат, пробуем ручной сбор...');
+                    allProps = null;
+                }
             } else {
-                // Если метода нет, собираем граф свойств в памяти за 1 секунду
+                this.log('⚠️ Метод getAllProperties не найден, используем ручной сбор...');
+            }
+            
+            if (!allProps) {
+                // Если метода нет или он вернул пусто, собираем граф свойств в памяти за 1 секунду
                 allProps = new Map();
                 const rels = await manager.getAllItemsOfType(modelID, 'IFCRELDEFINESBYPROPERTIES', false);
+                this.log(`📦 Найдено связей IFCRELDEFINESBYPROPERTIES: ${rels.length}`);
                 for (const relID of rels) {
                     const rel = await manager.getItemProperties(modelID, relID);
                     if (!rel || !rel.RelatingPropertyDefinition || !rel.RelatedObjects) continue;
@@ -1240,13 +1251,19 @@ class BIMApp {
             await new Promise(r => setTimeout(r, 10));
 
             // 4. Раскидываем результат по DOM-узлам
+            let appliedCount = 0;
             nodes.forEach(node => {
                 const id = parseInt(node.getAttribute('data-id'));
                 if (indexData[id]) {
-                    if (indexData[id].s) node.setAttribute('data-system', indexData[id].s);
+                    if (indexData[id].s) {
+                        node.setAttribute('data-system', indexData[id].s);
+                        appliedCount++;
+                    }
                     if (indexData[id].f) node.setAttribute('data-family', indexData[id].f);
                 }
             });
+
+            this.log(`📊 Найдено систем: ${Object.keys(indexData).filter(k => indexData[k].s).length}, применено к узлам: ${appliedCount}`);
 
             // Кэшируем для мгновенной загрузки в будущем
             try { localStorage.setItem(cacheKey, JSON.stringify(indexData)); } catch(e) {}
@@ -1272,6 +1289,8 @@ class BIMApp {
     }
 
     renderSystemsList() {
+        this.log('🔍 renderSystemsList: начало выполнения...');
+        
         // Проверка наличия контейнера, создание если нет
         let container = document.getElementById('systems-container');
         if (!container) {
@@ -1300,6 +1319,8 @@ class BIMApp {
         }
         
         const nodes = document.querySelectorAll('.tree-node[data-system]');
+        this.log(`📊 Найдено узлов с data-system: ${nodes.length}`);
+        
         const systems = new Set();
         
         nodes.forEach(node => {
@@ -1309,15 +1330,18 @@ class BIMApp {
             }
         });
 
+        this.log(`🏷️ Уникальных систем найдено: ${systems.size}`);
         list.innerHTML = '';
 
         if (systems.size === 0) {
             container.style.display = 'none';
+            this.log('⚠️ Системы не найдены, скрываем контейнер');
             return;
         }
 
         // Сортировка по алфавиту
         const sortedSystems = Array.from(systems).sort((a, b) => a.localeCompare(b));
+        this.log(`📋 Отсортированные системы: ${sortedSystems.join(', ')}`);
 
         sortedSystems.forEach(sys => {
             const btn = document.createElement('button');
@@ -1328,6 +1352,7 @@ class BIMApp {
         });
 
         container.style.display = 'block';
+        this.log('✅ Контейнер систем отображен');
     }
 
     toggleSystemIsolation(systemName, btnElement) {
