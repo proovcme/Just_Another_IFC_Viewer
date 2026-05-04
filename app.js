@@ -318,8 +318,11 @@ class BIMApp {
             this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
             this.raycaster.setFromCamera(this.mouse, this.camera);
-            const visibleModels = Array.from(this.loadedModels.values()).filter(m => m.visible);
-            const hits = this.raycaster.intersectObjects(visibleModels);
+            // Извлекаем сами mesh-объекты из loadedModels для корректного raycasting
+            const visibleMeshes = Array.from(this.loadedModels.values())
+                .filter(m => m.visible)
+                .map(m => m.mesh);
+            const hits = this.raycaster.intersectObjects(visibleMeshes);
             
             if (hits.length > 0) {
                 this.addMeasurePoint(hits[0].point);
@@ -626,8 +629,11 @@ class BIMApp {
         this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
         this.raycaster.setFromCamera(this.mouse, this.camera);
-        const visibleModels = Array.from(this.loadedModels.values()).filter(m => m.visible);
-        const hits = this.raycaster.intersectObjects(visibleModels);
+        // Извлекаем сами mesh-объекты из loadedModels
+        const visibleMeshes = Array.from(this.loadedModels.values())
+            .filter(m => m.visible)
+            .map(m => m.mesh);
+        const hits = this.raycaster.intersectObjects(visibleMeshes);
         
         if (hits.length > 0) {
             const hit = hits[0];
