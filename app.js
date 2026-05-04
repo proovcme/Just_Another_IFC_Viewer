@@ -1210,8 +1210,11 @@ class BIMApp {
 
                         const name = rawName.toLowerCase();
                         if (name.includes('system') || name.includes('система') || name.includes('pset_system')) {
-                            sysName = String(val);
-                            break;
+                            const cleaned = this.cleanSystemName(String(val));
+                            if (cleaned) {
+                                sysName = cleaned;
+                                break;
+                            }
                         }
                     }
                     if (sysName) break;
@@ -1241,9 +1244,12 @@ class BIMApp {
                     if (elemProps && elemProps.Name) {
                         const nameVal = elemProps.Name.value || elemProps.Name;
                         if (nameVal && typeof nameVal === 'string' && nameVal.trim().length > 2 && !nameVal.startsWith('Ifc')) {
-                            indexData[expressID] = { s: nameVal.trim() };
-                            directReadCount++;
-                            continue;
+                            const cleaned = this.cleanSystemName(nameVal.trim());
+                            if (cleaned) {
+                                indexData[expressID] = { s: cleaned };
+                                directReadCount++;
+                                continue;
+                            }
                         }
                     }
                     
@@ -1251,9 +1257,12 @@ class BIMApp {
                     if (!indexData[expressID] && elemProps && elemProps.Tag) {
                         const tagVal = elemProps.Tag.value || elemProps.Tag;
                         if (tagVal && typeof tagVal === 'string' && tagVal.trim().length > 2) {
-                            indexData[expressID] = { s: tagVal.trim() };
-                            directReadCount++;
-                            continue;
+                            const cleaned = this.cleanSystemName(tagVal.trim());
+                            if (cleaned) {
+                                indexData[expressID] = { s: cleaned };
+                                directReadCount++;
+                                continue;
+                            }
                         }
                     }
                     
@@ -1261,9 +1270,12 @@ class BIMApp {
                     if (!indexData[expressID] && elemProps && elemProps.ObjectType) {
                         const typeVal = elemProps.ObjectType.value || elemProps.ObjectType;
                         if (typeVal && typeof typeVal === 'string' && typeVal.trim().length > 2) {
-                            indexData[expressID] = { s: typeVal.trim() };
-                            directReadCount++;
-                            continue;
+                            const cleaned = this.cleanSystemName(typeVal.trim());
+                            if (cleaned) {
+                                indexData[expressID] = { s: cleaned };
+                                directReadCount++;
+                                continue;
+                            }
                         }
                     }
                 } catch (e) {
@@ -1309,6 +1321,27 @@ class BIMApp {
 
     this.finishIndexingUI(btn, progressText, '✅ Индексация завершена');
     this.renderSystemsList();
+}
+
+/**
+ * Очистка имени системы от технического мусора
+ */
+cleanSystemName(rawName) {
+    if (!rawName || typeof rawName !== 'string') return null;
+    
+    let name = rawName.trim();
+
+    // Фильтр мусора:
+    // 1. Содержит скобки и двоеточия в начале (технические префиксы)
+    if (/^\w+\):/.test(name)) return null;
+    // 2. Содержит GUID-подобные строки
+    if (/[0-9a-f]{8}-[0-9a-f]{4}/i.test(name)) return null;
+    // 3. Слишком длинное и содержит спецсимволы
+    if (name.length > 100 && name.includes(':')) return null;
+    // 4. Явные маркеры стандартов без полезной информации
+    if (name.includes('STANDARD') && name.split(':').length > 3) return null;
+
+    return name;
 }
 
     finishIndexingUI(btn, progressText, message) {
