@@ -1156,32 +1156,56 @@ class BIMApp {
             let systemsFromGraph = 0;
             try {
                 this.log(`🌐 Сканирование графа IfcRelAssignsToGroup...`);
-                
+
                 // Получаем все связи назначения к группе
                 const rels = await manager.getAllItemsOfType(modelID, 'IFCRELASSIGNSTOGROUP', false);
                 this.log(`🔗 Найдено связей IfcRelAssignsToGroup: ${rels.length}`);
-                
+
+                if (rels.length > 0) {
+                    // Логируем первую связь для отладки структуры
+                    const firstRel = await manager.getItemProperties(modelID, rels[0]);
+                    this.log(`🔍 Пример связи (JSON): ${JSON.stringify(firstRel).substring(0, 500)}...`);
+                    
+                    // Проверяем тип первой группы напрямую
+                    if (firstRel && firstRel.RelatingGroup) {
+                        const groupProps = await manager.getItemProperties(modelID, firstRel.RelatingGroup.value);
+                        this.log(`🏛️ Тип группы: ${groupProps.type}, Имя: ${groupProps.Name?.value || 'без имени'}`);
+                    }
+                }
+
                 for (const relID of rels) {
                     const rel = await manager.getItemProperties(modelID, relID);
                     if (!rel || !rel.RelatingGroup || !rel.RelatedObjects) continue;
-                    
+
                     // Проверяем, является ли группа системой (IfcSystem)
+                    // Варианты проверки: по строковому типу, по числовому ID, по наличию свойства Name
                     const groupType = rel.RelatingGroup.type;
-                    const isSystem = groupType && (
+                    const groupValue = rel.RelatingGroup.value;
+                    
+                    // Получаем свойства группы для дополнительной проверки
+                    const groupProps = await manager.getItemProperties(modelID, groupValue);
+                    const isSystemByType = groupType && (
+                        String(groupType).toUpperCase().includes('SYSTEM') || 
                         groupType === 'IFCSYSTEM' || 
-                        (typeof groupType === 'number' && groupType === 938) // 938 = IFCSYSTEM ID
+                        (typeof groupType === 'number' && groupType === 938)
                     );
                     
-                    if (!isSystem) continue;
-                    
-                    // Получаем имя системы
-                    const sysProps = await manager.getItemProperties(modelID, rel.RelatingGroup.value);
-                    const sysName = sysProps && sysProps.Name ? sysProps.Name.value : null;
+                    // Доп. проверка: если у группы есть Name и он похож на имя системы
+                    const groupName = groupProps.Name?.value || '';
+                    const isSystemByName = groupName && (
+                        groupName.toLowerCase().includes('system') ||
+                        groupName.toLowerCase().includes('система') ||
+                        /^[A-Z0-9\-_]+$/.test(groupName) // Короткие коды типа "T1", "K1-2"
+                    );
+
+                    if (!isSystemByType && !isSystemByName) continue;
+
+                    const sysName = groupName || groupProps.ObjectType?.value || groupProps.Tag?.value;
                     if (!sysName) continue;
-                    
+
                     const cleanedSysName = this.cleanSystemName(sysName);
                     if (!cleanedSysName) continue;
-                    
+
                     // Назначаем всем связанным объектам эту систему
                     for (const objRef of rel.RelatedObjects) {
                         const elemID = objRef.value;
@@ -1194,6 +1218,7 @@ class BIMApp {
                 this.log(`✅ Найдено систем через граф: ${systemsFromGraph}`);
             } catch (e) {
                 this.log(`⚠️ Ошибка чтения графа систем: ${e.message}`);
+                console.error('IfcRelAssignsToGroup error:', e);
             }
 
             // ШАГ 1: Пытаемся получить граф свойств через IFCRELDEFINESBYPROPERTIES
