@@ -1,4 +1,35 @@
 ```
-# Logs and temp files
+# Dependencies
+node_modules/
+
+# Logs
 *.log
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# Temp files
+*.tmp
+*.swp
+
+# Build artifacts
+dist/
+build/
+target/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# System
+.DS_Store
+Thumbs.db
 ```
