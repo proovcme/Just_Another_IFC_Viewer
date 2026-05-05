@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { IFCLoader } from 'web-ifc-three';
+import { IfcDataParser } from './ifc-parser.js';
 
 const CONFIG = {
     WALK_SPEED: 0.8,
@@ -189,6 +190,9 @@ class BIMApp {
         this.loader = new IFCLoader();
         await this.loader.ifcManager.setWasmPath('./node_modules/web-ifc/');
         this.log('WASM initialized');
+        
+        // Инициализация парсера IFC данных
+        this.ifcParser = new IfcDataParser(this.loader.ifcManager.ifcApi, this.loader.ifcManager);
         
         this.scene = new THREE.Scene();
         this.scene.background = new THREE.Color(this.elements.inputBgColor.value);
@@ -2041,6 +2045,57 @@ cleanSystemName(rawName) {
         this.renderer.setSize(originalSize.x, originalSize.y, true);
         this.pivotSphere.visible = helperVisible;
         this.needsUpdate = true;
+    }
+
+    /**
+     * Изолирует элементы на сцене - скрывает все кроме указанных
+     * Использует IfcDataParser для оптимизированной работы с подмножествами
+     * 
+     * @param {number[]} elementIds - Массив Express ID для отображения
+     * @param {string} modelName - Имя модели (опционально, иначе текущая)
+     */
+    isolateElements(elementIds, modelName = null) {
+        const targetModelName = modelName || this.currentModelName;
+        
+        if (!targetModelName || !this.loadedModels.has(targetModelName)) {
+            this.log('⚠️ Модель не найдена для изоляции');
+            return;
+        }
+
+        const modelData = this.loadedModels.get(targetModelName);
+        
+        // Используем парсер для создания подмножества
+        this.ifcParser.isolateElements(
+            this.scene,
+            modelData.modelID,
+            elementIds,
+            modelData.mesh
+        );
+        
+        this.log(`✓ Изолировано ${elementIds.length} элементов в модели ${targetModelName}`);
+        this.needsUpdate = true;
+    }
+
+    /**
+     * Сбрасывает видимость всех элементов через IfcDataParser
+     * Удаляет все созданные подмножества и показывает оригинальную геометрию
+     */
+    resetVisibilityFull() {
+        // Сброс через парсер (удаляет subset)
+        if (this.ifcParser) {
+            this.ifcParser.resetVisibility(this.scene);
+        }
+
+        // Дополнительный сброс через менеджер для всех моделей
+        this.loadedModels.forEach((modelData, modelName) => {
+            if (modelData && modelData.mesh) {
+                modelData.mesh.visible = true;
+            }
+        });
+        
+        this.clearHighlights();
+        this.needsUpdate = true;
+        this.log('✓ Видимость сброшена');
     }
 }
 
