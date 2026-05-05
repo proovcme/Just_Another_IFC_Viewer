@@ -2,7 +2,7 @@
  * Модуль парсинга IFC-данных и управления видимостью элементов
  * 
  * Основные функции:
- * 1. Парсинг логических систем (IfcDistributionSystem) через связи IfcRelAssignsToGroup
+ * 1. Парсинг логических систем (IfcDistributionSystem) с рекурсивным обходом связей
  * 2. Группировка физических элементов (IfcProduct) по классам IFC с подсчетом
  * 3. Изоляция элементов на сцене через оптимизированный Subset API
  * 
@@ -19,34 +19,70 @@ class IfcDataParser {
         this.systemsCache = null;
         // Кэш категорий для избежания повторного парсинга
         this.categoriesCache = null;
+        
+        // Физические типы элементов которые имеют геометрию и должны отображаться
+        // Исключаем IfcDistributionPort так как это абстрактные точки подключения
+        this.physicalElementTypes = [
+            'IfcDuctSegment',
+            'IfcDuctFitting',
+            'IfcFlowFitting',
+            'IfcFlowTerminal',
+            'IfcFlowController',
+            'IfcFlowMovingDevice',
+            'IfcFlowStorage',
+            'IfcFlowTreatment',
+            'IfcPipeSegment',
+            'IfcPipeFitting',
+            'IfcValve',
+            'IfcDamper',
+            'IfcAirTerminal',
+            'IfcDiffuser',
+            'IfcGrille',
+            'IfcRegister',
+            'IfcFan',
+            'IfcPump',
+            'IfcCoil',
+            'IfcFilter',
+            'IfcHumidifier',
+            'IfcEvaporativeCooler',
+            'IfcElectricMotor',
+            'IfcCableCarrierSegment',
+            'IfcCableSegment',
+            'IfcJunctionBox'
+        ];
     }
 
     /**
      * Парсит IFC-файл и извлекает логические системы (IfcDistributionSystem и др.)
      * 
-     * ЛОГИКА ОБХОДА ГРАФА СВЯЗЕЙ IFC:
-     * ================================
-     * В IFC логические системы (например, система вентиляции, система водоснабжения)
-     * не имеют собственной геометрии. Они представляют собой абстрактные группы,
-     * которые объединяют физические элементы через отношения (relationships).
+     * УЛУЧШЕННАЯ ЛОГИКА ОБХОДА ГРАФА СВЯЗЕЙ IFC:
+     * ===========================================
+     * В IFC логические системы не имеют собственной геометрии. Они объединяют
+     * физические элементы через сложные цепочки отношений:
      * 
-     * Структура связи выглядит так:
-     * IfcDistributionSystem (система) <-- RelatingGroup -- IfcRelAssignsToGroup -- RelatedObjects --> [IfcDuctSegment, IfcFlowFitting, ...]
+     * Прямая связь (редко):
+     * IfcDistributionSystem <-- IfcRelAssignsToGroup --> [IfcDuctSegment, IfcFlowFitting]
      * 
-     * Ключевой момент: нужно найти все экземпляры IfcRelAssignsToGroup, где:
-     * - RelatingGroup указывает на нашу систему
-     * - RelatedObjects содержит массив ссылок на физические элементы
+     * Косвенная связь (чаще всего):
+     * IfcDistributionSystem <-- IfcRelAssignsToGroup --> [IfcDistributionPort]
+     *                                                    |
+     *                                           IfcRelConnectsPorts
+     *                                                    |
+     *                                                    v
+     *                                          [IfcFlowSegment, IfcFlowFitting]
      * 
-     * Это "узкое место" потому что:
-     * 1. Нужно перебрать все отношения в файле (может быть тысячи)
-     * 2. Для каждого отношения получить данные и проверить RelatingGroup
-     * 3. RelatedObjects может быть представлен по-разному (единый объект или массив)
+     * АЛЬГОРИТМ:
+     * 1. Находим все элементы в системе через IfcRelAssignsToGroup
+     * 2. Если элемент это порт (IfcDistributionPort), ищем связанные с ним сегменты/фитинги
+     * 3. Рекурсивно обходим связи пока не найдем все физические элементы
+     * 4. Исключаем порты из финального результата (они не имеют полезной геометрии)
+     * 5. Возвращаем только Express ID физической геометрии
      * 
-     * @returns {Object} Объект где ключ - имя системы, значение - массив Express ID элементов
+     * @returns {Object} Объект где ключ - имя системы, значение - массив Express ID ФИЗИЧЕСКИХ элементов
      * 
      * Пример возврата:
      * {
-     *   "Система вентиляции": [1234, 5678, 9012],
+     *   "Система вентиляции": [1234, 5678, 9012],  // Только IfcDuctSegment, IfcFlowFitting и т.д.
      *   "Система отопления": [3456, 7890]
      * }
      */
@@ -59,9 +95,6 @@ class IfcDataParser {
         const systemsMap = {};
         
         // Типы систем которые могут содержать логические группы
-        // IfcDistributionSystem - основной тип для инженерных систем
-        // IfcSystem - базовый абстрактный тип
-        // IfcZone - зональная система (например, температурная зона)
         const systemTypes = [
             this.ifcApi.IfcDistributionSystem,
             this.ifcApi.IfcSystem,
@@ -70,28 +103,27 @@ class IfcDataParser {
 
         // Проходим по каждому типу системы
         for (const type of systemTypes) {
-            // GetAllItemsOfType возвращает все ID сущностей указанного типа
-            // Параметр true означает "includeInherited" - включать наследников типа
             const systems = this.ifcApi.GetAllItemsOfType(0, type, true);
             
-            // systems - это вектор C++ доступный через WASM, используем .size() и .get(i)
             for (let i = 0; i < systems.size(); i++) {
                 const systemId = systems.get(i);
-                
-                // Получаем человекочитаемое имя системы
                 const systemName = this.getEntityName(systemId);
                 
-                // КРИТИЧЕСКИ ВАЖНАЯ ЛОГИКА:
-                // Находим все элементы связанные с этой системой через IfcRelAssignsToGroup
-                const relatedElements = this.findRelatedElementsInGroup(systemId);
+                // Находим все элементы связанные с этой системой
+                const directlyRelatedElements = this.findRelatedElementsInGroup(systemId);
                 
-                // Добавляем в результат только если есть связанные элементы
-                if (relatedElements.length > 0) {
-                    // Если система с таким именем уже есть, объединяем элементы
+                // РЕКУРСИВНЫЙ ОБХОД: превращаем порты в физические элементы
+                const physicalElementIds = this.resolvePhysicalElements(directlyRelatedElements);
+                
+                // Добавляем в результат только если есть физические элементы
+                if (physicalElementIds.length > 0) {
                     if (systemsMap[systemName]) {
-                        systemsMap[systemName] = [...systemsMap[systemName], ...relatedElements];
+                        // Объединяем с существующими, избегая дубликатов
+                        const existing = new Set(systemsMap[systemName]);
+                        physicalElementIds.forEach(id => existing.add(id));
+                        systemsMap[systemName] = Array.from(existing);
                     } else {
-                        systemsMap[systemName] = relatedElements;
+                        systemsMap[systemName] = physicalElementIds;
                     }
                 }
             }
@@ -99,6 +131,201 @@ class IfcDataParser {
         
         this.systemsCache = systemsMap;
         return systemsMap;
+    }
+
+    /**
+     * Преобразует список элементов (включая порты) в список только физических элементов
+     * 
+     * КЛЮЧЕВАЯ ЛОГИКА:
+     * ================
+     * 1. Разделяем элементы на порты и физические элементы
+     * 2. Для каждого порта ищем связанные сегменты/фитинги через IfcRelConnectsPorts
+     * 3. Рекурсивно продолжаем обход пока не соберем всю трассу
+     * 4. Используем Set visitedIds для защиты от циклических ссылок
+     * 
+     * @param {number[]} elementIds - Массив Express ID из IfcRelAssignsToGroup
+     * @returns {number[]} Массив Express ID только физических элементов
+     */
+    resolvePhysicalElements(elementIds) {
+        const physicalIds = new Set();
+        const visitedIds = new Set(); // Защита от циклов
+        const portIds = [];
+        
+        // Шаг 1: Разделяем на порты и физические элементы
+        for (const id of elementIds) {
+            if (visitedIds.has(id)) continue;
+            visitedIds.add(id);
+            
+            try {
+                const entity = this.ifcApi.GetLine(0, id, false);
+                const typeName = entity.constructor.name;
+                
+                if (typeName === 'IfcDistributionPort') {
+                    // Порт - нужно найти связанные элементы
+                    portIds.push(id);
+                } else if (this.isPhysicalElementType(typeName)) {
+                    // Физический элемент с геометрией - добавляем в результат
+                    physicalIds.add(id);
+                }
+                // Остальные типы игнорируем
+            } catch (error) {
+                console.warn(`⚠️ Ошибка определения типа элемента ${id}:`, error.message);
+            }
+        }
+        
+        // Шаг 2: Для каждого порта находим связанные физические элементы
+        for (const portId of portIds) {
+            this.findConnectedPhysicalElements(portId, physicalIds, visitedIds);
+        }
+        
+        return Array.from(physicalIds);
+    }
+
+    /**
+     * Рекурсивно находит физические элементы подключенные к порту
+     * 
+     * ЛОГИКА ОБХОДА СВЯЗЕЙ ПОРТОВ:
+     * ============================
+     * IfcRelConnectsPorts связывает два порта:
+     * - RelatingPort: первый порт
+     * - RelatedPort: второй порт
+     * 
+     * Каждый порт имеет свойство ConnectedTo которое указывает на элемент:
+     * - IfcFlowSegment (сегмент трубы/воздуховода)
+     * - IfcFlowFitting (фитинг, тройник, колено)
+     * - IfcFlowTerminal (конечное устройство: диффузор, решетка)
+     * 
+     * Через цепочку портов можно пройти всю трассу системы.
+     * 
+     * @param {number} portId - Express ID порта
+     * @param {Set} physicalIds - Set для накопления найденных физических ID
+     * @param {Set} visitedIds - Set посещенных ID для защиты от циклов
+     */
+    findConnectedPhysicalElements(portId, physicalIds, visitedIds) {
+        // Получаем все отношения IfcRelConnectsPorts в модели
+        const relConnects = this.ifcApi.GetAllItemsOfType(
+            0,
+            this.ifcApi.IfcRelConnectsPorts,
+            true
+        );
+        
+        for (let i = 0; i < relConnects.size(); i++) {
+            const relId = relConnects.get(i);
+            
+            try {
+                const relData = this.ifcApi.GetLine(0, relId, false);
+                
+                // Проверяем связан ли этот порт с данным отношением
+                let connectedPortId = null;
+                
+                if (relData.RelatingPort && relData.RelatingPort.value === portId) {
+                    connectedPortId = relData.RelatedPort ? relData.RelatedPort.value : null;
+                } else if (relData.RelatedPort && relData.RelatedPort.value === portId) {
+                    connectedPortId = relData.RelatingPort ? relData.RelatingPort.value : null;
+                }
+                
+                if (!connectedPortId) continue;
+                
+                // Нашли связанный порт! Теперь ищем физические элементы подключенные к обоим портам
+                this.extractPhysicalElementsFromPort(portId, physicalIds, visitedIds);
+                this.extractPhysicalElementsFromPort(connectedPortId, physicalIds, visitedIds);
+                
+                // Рекурсивно обрабатываем связанный порт если еще не посещали
+                if (!visitedIds.has(connectedPortId)) {
+                    visitedIds.add(connectedPortId);
+                    
+                    // Проверяем тип связанного порта
+                    try {
+                        const connectedEntity = this.ifcApi.GetLine(0, connectedPortId, false);
+                        if (connectedEntity.constructor.name === 'IfcDistributionPort') {
+                            // Это тоже порт - продолжаем рекурсивный обход
+                            this.findConnectedPhysicalElements(connectedPortId, physicalIds, visitedIds);
+                        }
+                    } catch (e) {
+                        // Игнорируем ошибки
+                    }
+                }
+            } catch (error) {
+                console.warn(`⚠️ Ошибка обработки связи портов ${relId}:`, error.message);
+            }
+        }
+    }
+
+    /**
+     * Извлекает физические элементы из порта через свойство ConnectedTo
+     * 
+     * @param {number} portId - Express ID порта
+     * @param {Set} physicalIds - Set для накопления найденных физических ID
+     * @param {Set} visitedIds - Set посещенных ID
+     */
+    extractPhysicalElementsFromPort(portId, physicalIds, visitedIds) {
+        try {
+            const portEntity = this.ifcApi.GetLine(0, portId, false);
+            
+            // Проверяем ConnectedTo - ссылка на физический элемент
+            if (portEntity.ConnectedTo && portEntity.ConnectedTo.value) {
+                const connectedId = portEntity.ConnectedTo.value;
+                
+                if (!visitedIds.has(connectedId)) {
+                    visitedIds.add(connectedId);
+                    
+                    try {
+                        const connectedEntity = this.ifcApi.GetLine(0, connectedId, false);
+                        const typeName = connectedEntity.constructor.name;
+                        
+                        if (this.isPhysicalElementType(typeName)) {
+                            physicalIds.add(connectedId);
+                        }
+                    } catch (e) {
+                        // Игнорируем
+                    }
+                }
+            }
+            
+            // Также проверяем ConnectedFrom (обратная связь)
+            if (portEntity.ConnectedFrom) {
+                const fromRefs = portEntity.ConnectedFrom;
+                
+                // Может быть массивом или одиночным объектом
+                const fromIds = [];
+                if (fromRefs && typeof fromRefs.map === 'function') {
+                    fromRefs.map(item => { if (item && item.value) fromIds.push(item.value); });
+                } else if (Array.isArray(fromRefs)) {
+                    fromRefs.forEach(item => { if (item && item.value) fromIds.push(item.value); });
+                } else if (fromRefs && fromRefs.value) {
+                    fromIds.push(fromRefs.value);
+                }
+                
+                for (const connectedId of fromIds) {
+                    if (!visitedIds.has(connectedId)) {
+                        visitedIds.add(connectedId);
+                        
+                        try {
+                            const connectedEntity = this.ifcApi.GetLine(0, connectedId, false);
+                            const typeName = connectedEntity.constructor.name;
+                            
+                            if (this.isPhysicalElementType(typeName)) {
+                                physicalIds.add(connectedId);
+                            }
+                        } catch (e) {
+                            // Игнорируем
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            console.warn(`⚠️ Ошибка извлечения элементов из порта ${portId}:`, error.message);
+        }
+    }
+
+    /**
+     * Проверяет является ли тип элемента физическим (имеющим геометрию)
+     * 
+     * @param {string} typeName - Имя типа IFC сущности
+     * @returns {boolean} true если это физический элемент с геометрией
+     */
+    isPhysicalElementType(typeName) {
+        return this.physicalElementTypes.includes(typeName);
     }
 
     /**
